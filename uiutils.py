@@ -1,18 +1,59 @@
+import cv2
+import numpy as np
+import logging
+import os
+import tkFileDialog
 import Tkinter as tk
 import tkMessageBox
-import os
-import numpy as np
-import cv2
 from PIL import Image, ImageTk, ImageDraw
 
 
+# Logger for this module
+logger = logging.getLogger(__name__)
+
 # Supported filetypes
 supportedFiletypes = [('JPEG Image', '*.jpg'), ('PNG Image', '*.png'),
- ('PPM Image', '*.ppm')]
+                      ('PPM Image', '*.ppm')]
+
+# Colors for points
+color_list = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0),
+              (0, 255, 255), (255, 0, 255)]
 
 
 def error(msg):
-    tkMessageBox.showerror("Error", msg)
+    '''Display a message box with the title 'Error' and the message as body.'''
+    tkMessageBox.showerror('Error', msg)
+
+
+def convert_cv_to_tk(cv_image):
+    '''Converts an OpenCV-loaded image to the format used by Tkinter.'''
+    img = Image.fromarray(cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB))
+    return ImageTk.PhotoImage(img)
+
+
+def get_fitted_dimension(object_height, object_width, container_height,
+                         container_width):
+    '''Computes the dimensions of an object if it were to be fitted into a
+    container, preseving the aspect ratio. Returns a tuple of height, width,
+    scale-up ratio, with height and width being integers.'''
+    original_height = object_height
+    ratio = object_width / float(object_height)
+    if container_height < object_height:
+        object_height = container_height
+        object_width = int(ratio * object_height)
+    if container_width < object_width:
+        object_width = container_width
+        object_height = int(object_width / ratio)
+    return object_height, object_width, float(object_height) / original_height
+
+
+def coordinates_of_top_left(object_height, object_width, container_height,
+                            container_width):
+    '''Computes the coordinates of an object which is to be centered in a
+    container. Returns a tuple of y, x coordinates as floats.'''
+    x = (container_width - object_width) / 2.0
+    y = (container_height - object_height) / 2.0
+    return y, x
 
 
 class ImageWidget(tk.Canvas):
@@ -21,53 +62,170 @@ class ImageWidget(tk.Canvas):
        as well as writing of the image to files. '''
 
     def __init__(self, parent):
-        self.imageCanvas = tk.Canvas.__init__(self, parent)
-        self.originalImage = None
-        self.bind("<Configure>", self.redraw)
+        '''Starts with empty canvas.'''
+        tk.Canvas.__init__(self, parent)
+        self.raw_image = None
+        self.drawn_image_dim = (0, 0) # height, width
+        self.bind('<Configure>', self.redraw)
 
-    def convertCVToTk(self, cvImage):
-        height, width, _ = cvImage.shape
+    def get_fitted_dimension(self, cv_image=None):
+        '''Returns the height, width, scale-up as if the given image were to be
+        fit on this canvas. Uses the raw_image if cv_image is None.'''
+        cv_image = cv_image if cv_image is not None else self.raw_image
+        if cv_image is None:
+            raise ValueError('There is no image drawn on the canvas.')
+        height, width = cv_image.shape[:2]
         if height == 0 or width == 0:
-            return 0, 0, None
-        img = Image.fromarray(cv2.cvtColor(cvImage, cv2.COLOR_BGR2RGB))
-        return height, width, ImageTk.PhotoImage(img)
+            raise ValueError('The CV image must have non-zero dimension.')
+        return get_fitted_dimension(height, width, self.winfo_height(),
+                                    self.winfo_width())
 
-    def fitImageToCanvas(self, cvImage):
-        height, width, _ = cvImage.shape
-        if height == 0 or width == 0:
-            return cvImage
-        ratio = width / float(height)
-        if self.winfo_height() < height:
-            height = self.winfo_height()
-            width = int(ratio * height)
-        if self.winfo_width() < width:
-            width = self.winfo_width()
-            height = int(width / ratio)
-        dest = cv2.resize(cvImage, (width, height),
-            interpolation=cv2.INTER_LANCZOS4)
-        return dest
+    def coordinates_of_top_left(self, cv_image=None):
+        '''Returns the coordinates of the top left of the given image if it were
+        to be fitted to the canvas. Uses raw_image if cv_image is None.'''
+        height, width, _ = self.get_fitted_dimension(cv_image)
+        return coordinates_of_top_left(height, width, self.winfo_height(),
+                                       self.winfo_width())
 
-    def drawCVImage(self, cvImage):
-        self.originalImage = cvImage
-        height, width, img = self.convertCVToTk(self.fitImageToCanvas(cvImage))
-        if height == 0 or width == 0:
-            return
-        self.tkImage = img # prevent the image from being garbage collected
+    def fit_cv_image_to_canvas(self, cv_image):
+        '''Fits a CV image to the size of the canvas, and returns a tuple of
+        height, width, and the new CV image.'''
+        height, width, _ = self.get_fitted_dimension(cv_image)
+        dest = cv2.resize(cv_image, (width, height),
+                          interpolation=cv2.INTER_LANCZOS4)
+        return height, width, dest
+
+    def draw_cv_image(self, cv_image):
+        '''Draws the given OpenCV image and store a reference to it.'''
+        self.raw_image = cv_image # preserve the image to be drawn
+        height, width, small_cv_image = self.fit_cv_image_to_canvas(cv_image)
+        img = convert_cv_to_tk(small_cv_image)
+        self.tk_image = img # prevent the image from being garbage collected
         self.delete("all")
-        x = (self.winfo_width() - width) / 2.0
-        y = (self.winfo_height() - height) / 2.0
-        self.create_image(x, y, anchor=tk.NW, image=self.tkImage)
+        self.drawn_image_dim = (height, width)
+        y, x = self.coordinates_of_top_left()
+        self.create_image(x, y, anchor=tk.NW, image=self.tk_image)
 
-    def redraw(self, _):
-        if self.originalImage is not None:
-            self.drawCVImage(self.originalImage)
+    def redraw(self, *args):
+        '''Redraw the image on the canvas.'''
+        if self.raw_image is not None:
+            self.draw_cv_image(self.raw_image)
 
-    def writeToFile(self, filename):
-        if self.originalImage is not None:
-            cv2.imwrite(filename, self.originalImage)
+    def write_to_file(self, filename):
+        '''Writes the original OpenCV image to the given file.'''
+        if self.raw_image is not None:
+            cv2.imwrite(filename, self.raw_image)
 
-    def hasImage(self):
-        return self.originalImage is not None
+    def has_image(self):
+        '''Returns True if the canvas has an image drawn on it.'''
+        return self.raw_image is not None
+
+
+class ClickableImageWidget(ImageWidget):
+    '''An image-displaying widget that lets you click on the image to select
+    points.'''
+
+    def __init__(self, parent, dot_size=5):
+        '''dot_size is the size of the clicked dots.'''
+        ImageWidget.__init__(self, parent)
+        self.dot_size = dot_size
+        self.clicked_points = []
+        self.plain_image = None
+        self.bind('<Button-1>', self.handle_click)
+
+    def in_bounds(self, y, x):
+        '''Returns true if the given coordinates like within the drawn image.'''
+        h, w, _ = self.get_fitted_dimension()
+        img_y_offset, img_x_offset = self.coordinates_of_top_left()
+        return (y - img_y_offset) >= 0 and (y - img_y_offset) < h and \
+               (x - img_x_offset) >= 0 and (x - img_x_offset) < w
+
+    def pop_click(self):
+        '''Removes and returns the coordinates of the last clicked point lying
+        within the drawn image.'''
+        if len(self.clicked_points) > 0:
+            old = self.clicked_points.pop()
+            self.draw_all_points()
+            return old
+
+    def push_click(self, y, x):
+        '''Draws a point if it is in bounds and adds it to the internal list.'''
+        if self.in_bounds(y, x):
+            self.clicked_points.append((y, x))
+            self.draw_all_points()
+
+    def draw_new_image(self, cv_image):
+        '''Draw a new image on the canvas, clearing all the drawn points.
+        Use ths instead of draw_cv_image().'''
+        self.plain_image = cv_image
+        self.clicked_points = []
+        self.draw_cv_image(cv_image)
+
+    def canvas_to_image_coordinates(self, y, x):
+        '''Converts the canvas-coordinates of a point to the original images'
+        coordinates system.'''
+        img_y_offset, img_x_offset = self.coordinates_of_top_left()
+        original_height, original_width = self.raw_image.shape[:2]
+        drawn_height, drawn_width = self.drawn_image_dim
+        clicked_y = float(original_height) * (y - img_y_offset) / drawn_height
+        clicked_x = float(original_width) * (x - img_x_offset) / drawn_width
+        return (clicked_y, clicked_x)
+
+    def draw_all_points(self):
+        '''Draws all the points previously selected.'''
+        self.raw_image = self.plain_image.copy()
+        _, _, scale = self.get_fitted_dimension()
+        r = int(self.dot_size / scale)
+        color_index = 0
+        for y, x in self.clicked_points:
+            clicked_coords = self.canvas_to_image_coordinates(y, x)
+            clicked_y, clicked_x = int(clicked_coords[0]),int(clicked_coords[1])
+            cv2.circle(self.raw_image, (clicked_x, clicked_y), r,
+                       color_list[color_index % len(color_list)], -1)
+            color_index += 1
+        self.redraw()
+
+    def handle_click(self, event):
+        '''Adds a new clicked point to the internal list and redraws the
+        image.'''
+        self.push_click(event.y, event.x)
+
+
+class BaseFrame(tk.Frame):
+    def __init__(self, parent, root, nrows, ncols, initial_status=''):
+        '''
+        Inputs:
+            parent - the parent container
+            root - The Tk root
+            nrows - Number of rows excluding the status line
+            ncols - Number of columns
+            initial_status - The status text seen when the widget is first
+                             loaded
+        '''
+        assert nrows >= 1 and ncols >= 1
+        tk.Frame.__init__(self, parent)
+        self.root = root
+
+        self.status = tk.Label(self, text=initial_status)
+        self.status.grid(row=nrows, column=0, columnspan=ncols,
+                sticky=tk.W + tk.E)
+
+        # Assign equal weight to all columns
+        for i in range(ncols):
+            self.grid_columnconfigure(i, weight=1)
+
+    def set_status(self, text):
+        self.status.configure(text=text)
+        self.root.update()
+
+    def ask_for_image(self):
+        filename = tkFileDialog.askopenfilename(parent=self,
+            filetypes=supportedFiletypes)
+        if filename and os.path.isfile(filename):
+            image = cv2.imread(filename)
+            self.set_status('Loaded ' + filename)
+            return image
+        return None
 
 
 def showMatrixDialog(parent, text='Ok', rows=0, columns=0, array=None):
