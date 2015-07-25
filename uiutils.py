@@ -116,6 +116,10 @@ class ImageWidget(tk.Canvas):
         if self.raw_image is not None:
             cv2.imwrite(filename, self.raw_image)
 
+    def get_image(self):
+        '''Returns the OpenCV image associated with this widget.'''
+        return self.raw_image.copy() if self.raw_image is not None else None
+
     def has_image(self):
         '''Returns True if the canvas has an image drawn on it.'''
         return self.raw_image is not None
@@ -132,6 +136,9 @@ class ClickableImageWidget(ImageWidget):
         self.clicked_points = []
         self.plain_image = None
         self.bind('<Button-1>', self.handle_click)
+
+    def get_clicked_points(self):
+        return self.clicked_points[:]
 
     def in_bounds(self, y, x):
         '''Returns true if the given coordinates like within the drawn image.'''
@@ -156,7 +163,7 @@ class ClickableImageWidget(ImageWidget):
 
     def draw_new_image(self, cv_image):
         '''Draw a new image on the canvas, clearing all the drawn points.
-        Use ths instead of draw_cv_image().'''
+        Use this instead of draw_cv_image().'''
         self.plain_image = cv_image
         self.clicked_points = []
         self.draw_cv_image(cv_image)
@@ -189,7 +196,15 @@ class ClickableImageWidget(ImageWidget):
         '''Adds a new clicked point to the internal list and redraws the
         image.'''
         self.push_click(event.y, event.x)
-
+    
+    def get_center_of_clicked_points(self):
+        '''Returns the center of all the clicked points.'''
+        num_points = len(self.clicked_points)
+        if num_points == 0:
+            return None
+        y_center = sum(y for y, _ in self.clicked_points) / float(num_points)
+        x_center = sum(x for _, x in self.clicked_points) / float(num_points)
+        return y_center, x_center
 
 class BaseFrame(tk.Frame):
     def __init__(self, parent, root, nrows, ncols, initial_status=''):
