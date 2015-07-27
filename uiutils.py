@@ -1,12 +1,11 @@
+from PIL import Image, ImageTk, ImageDraw
+import Tkinter as tk
 import cv2
-import numpy as np
 import logging
+import numpy as np
 import os
 import tkFileDialog
-import Tkinter as tk
 import tkMessageBox
-from PIL import Image, ImageTk, ImageDraw
-
 
 # Logger for this module
 logger = logging.getLogger(__name__)
@@ -27,7 +26,10 @@ def error(msg):
 
 def convert_cv_to_tk(cv_image):
     '''Converts an OpenCV-loaded image to the format used by Tkinter.'''
-    img = Image.fromarray(cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB))
+    if len(cv_image.shape) == 3:
+        img = Image.fromarray(cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB))
+    else:
+        img = Image.fromarray(cv_image)
     return ImageTk.PhotoImage(img)
 
 
@@ -65,7 +67,8 @@ class ImageWidget(tk.Canvas):
         '''Starts with empty canvas.'''
         tk.Canvas.__init__(self, parent)
         self.raw_image = None
-        self.drawn_image_dim = (0, 0) # height, width
+        self.show_grayscale = False
+        self.drawn_image_dim = (0, 0)  # height, width
         self.bind('<Configure>', self.redraw)
 
     def get_fitted_dimension(self, cv_image=None):
@@ -77,8 +80,11 @@ class ImageWidget(tk.Canvas):
         height, width = cv_image.shape[:2]
         if height == 0 or width == 0:
             raise ValueError('The CV image must have non-zero dimension.')
-        return get_fitted_dimension(height, width, self.winfo_height(),
-                                    self.winfo_width())
+        if self.winfo_height() > 0 and self.winfo_width() > 0:
+            return get_fitted_dimension(height, width, self.winfo_height(),
+                                        self.winfo_width())
+        else:
+            return -1, -1
 
     def coordinates_of_top_left(self, cv_image=None):
         '''Returns the coordinates of the top left of the given image if it were
@@ -97,24 +103,38 @@ class ImageWidget(tk.Canvas):
 
     def draw_cv_image(self, cv_image):
         '''Draws the given OpenCV image and store a reference to it.'''
-        self.raw_image = cv_image # preserve the image to be drawn
-        height, width, small_cv_image = self.fit_cv_image_to_canvas(cv_image)
-        img = convert_cv_to_tk(small_cv_image)
-        self.tk_image = img # prevent the image from being garbage collected
-        self.delete("all")
-        self.drawn_image_dim = (height, width)
-        y, x = self.coordinates_of_top_left()
-        self.create_image(x, y, anchor=tk.NW, image=self.tk_image)
+        assert cv_image is not None
+        assert cv_image.shape[0] >= 1
+        assert cv_image.shape[1] >= 1
+        assert len(cv_image.shape) == 3 or cv_image.shape[2] == 3
+        self.raw_image = cv_image  # preserve the image to be drawn
+        self.redraw()
 
     def redraw(self, *args):
         '''Redraw the image on the canvas.'''
-        if self.raw_image is not None:
-            self.draw_cv_image(self.raw_image)
+        # The initial container size is 1x1
+        if self.raw_image is not None and self.winfo_height(
+        ) > 1 and self.winfo_width() > 1:
+            if self.show_grayscale and len(self.raw_image.shape) == 3:
+                cv_image = cv2.cvtColor(self.raw_image, cv2.COLOR_BGR2GRAY)
+            else:
+                cv_image = self.raw_image
+            height, width, small_cv_image = self.fit_cv_image_to_canvas(
+                cv_image)
+            img = convert_cv_to_tk(small_cv_image)
+            self.tk_image = img  # prevent the image from being garbage collected
+            self.delete("all")
+            self.drawn_image_dim = (height, width)
+            y, x = self.coordinates_of_top_left()
+            self.create_image(x, y, anchor=tk.NW, image=self.tk_image)
 
-    def write_to_file(self, filename):
+    def write_to_file(self, filename, grayscale=False):
         '''Writes the original OpenCV image to the given file.'''
         if self.raw_image is not None:
-            cv2.imwrite(filename, self.raw_image)
+            img = self.raw_image
+            if grayscale:
+                img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            cv2.imwrite(filename, img)
 
     def get_image(self):
         '''Returns the OpenCV image associated with this widget.'''
@@ -123,6 +143,12 @@ class ImageWidget(tk.Canvas):
     def has_image(self):
         '''Returns True if the canvas has an image drawn on it.'''
         return self.raw_image is not None
+
+    def set_grayscale(self, value):
+        '''If the passet value is true, draws the given raw_image as grayscale
+        otherwise defaults to its color scheme.'''
+        self.show_grayscale = value
+        self.redraw()
 
 
 class ClickableImageWidget(ImageWidget):
@@ -139,6 +165,10 @@ class ClickableImageWidget(ImageWidget):
 
     def get_clicked_points(self):
         return self.clicked_points[:]
+
+    def get_clicked_points_in_image_coordinates(self):
+        return [self.canvas_to_image_coordinates(y, x)
+                for y, x in self.clicked_points]
 
     def in_bounds(self, y, x):
         '''Returns true if the given coordinates like within the drawn image.'''
@@ -186,7 +216,8 @@ class ClickableImageWidget(ImageWidget):
         color_index = 0
         for y, x in self.clicked_points:
             clicked_coords = self.canvas_to_image_coordinates(y, x)
-            clicked_y, clicked_x = int(clicked_coords[0]),int(clicked_coords[1])
+            clicked_y, clicked_x = int(clicked_coords[0]), int(
+                clicked_coords[1])
             cv2.circle(self.raw_image, (clicked_x, clicked_y), r,
                        color_list[color_index % len(color_list)], -1)
             color_index += 1
@@ -196,15 +227,12 @@ class ClickableImageWidget(ImageWidget):
         '''Adds a new clicked point to the internal list and redraws the
         image.'''
         self.push_click(event.y, event.x)
-    
-    def get_center_of_clicked_points(self):
-        '''Returns the center of all the clicked points.'''
-        num_points = len(self.clicked_points)
-        if num_points == 0:
-            return None
-        y_center = sum(y for y, _ in self.clicked_points) / float(num_points)
-        x_center = sum(x for _, x in self.clicked_points) / float(num_points)
-        return y_center, x_center
+
+    def get_image(self):
+        '''Returns the OpenCV image associated with this widget.'''
+        return self.plain_image.copy(
+        ) if self.plain_image is not None else None
+
 
 class BaseFrame(tk.Frame):
     def __init__(self, parent, root, nrows, ncols, initial_status=''):
@@ -212,7 +240,7 @@ class BaseFrame(tk.Frame):
         Inputs:
             parent - the parent container
             root - The Tk root
-            nrows - Number of rows excluding the status line
+            nrows - Number of rows including the status line
             ncols - Number of columns
             initial_status - The status text seen when the widget is first
                              loaded
@@ -222,8 +250,10 @@ class BaseFrame(tk.Frame):
         self.root = root
 
         self.status = tk.Label(self, text=initial_status)
-        self.status.grid(row=nrows, column=0, columnspan=ncols,
-                sticky=tk.W + tk.E)
+        self.status.grid(row=nrows,
+                         column=0,
+                         columnspan=ncols,
+                         sticky=tk.W + tk.E)
 
         # Assign equal weight to all columns
         for i in range(ncols):
@@ -233,14 +263,16 @@ class BaseFrame(tk.Frame):
         self.status.configure(text=text)
         self.root.update()
 
-    def ask_for_image(self):
-        filename = tkFileDialog.askopenfilename(parent=self,
-            filetypes=supportedFiletypes)
+    def ask_for_image(self, filename=None):
+        if filename is None:
+            filename = tkFileDialog.askopenfilename(
+                parent=self,
+                filetypes=supportedFiletypes)
         if filename and os.path.isfile(filename):
             image = cv2.imread(filename)
             self.set_status('Loaded ' + filename)
-            return image
-        return None
+            return filename, image
+        return None, None
 
 
 def showMatrixDialog(parent, text='Ok', rows=0, columns=0, array=None):
@@ -276,18 +308,24 @@ def showMatrixDialog(parent, text='Ok', rows=0, columns=0, array=None):
                     return
         top.destroy()
 
-    wasCancelled = {'value' : False}
+    wasCancelled = {'value': False}
 
     def cancelButtonClick():
         model = None
         wasCancelled['value'] = True
         top.destroy()
 
-    tk.Button(top, text=text, command=acceptButtonClick).grid(row=rows,
-        column=columns-1, sticky=tk.E + tk.W)
+    tk.Button(top,
+              text=text,
+              command=acceptButtonClick).grid(row=rows,
+                                              column=columns - 1,
+                                              sticky=tk.E + tk.W)
 
-    tk.Button(top, text='Cancel', command=cancelButtonClick).grid(row=rows,
-        column=0, sticky=tk.E + tk.W)
+    tk.Button(top,
+              text='Cancel',
+              command=cancelButtonClick).grid(row=rows,
+                                              column=0,
+                                              sticky=tk.E + tk.W)
 
     parent.wait_window(top)
 
@@ -296,7 +334,7 @@ def showMatrixDialog(parent, text='Ok', rows=0, columns=0, array=None):
 
 def concatImages(imgs):
     # Skip Nones
-    imgs = [x for x in imgs if x is not None] # Filter out Nones
+    imgs = [x for x in imgs if x is not None]  # Filter out Nones
     if len(imgs) == 0:
         return None
     imgs = [img for img in imgs if img is not None]
@@ -307,9 +345,14 @@ def concatImages(imgs):
     accumw = 0
     for img in imgs:
         h, w = img.shape[:2]
-        vis[:h, accumw:accumw+w, :] = img
+        vis[:h, accumw:accumw + w, :] = img
         accumw += w
     return vis
+
+
+def ask_for_image_path_to_save(parent):
+    return tkDialog.asksaveasfilename(parent=parent,
+                                      filetypes=supportedFiletypes)
 
 
 if __name__ == '__main__':
@@ -322,4 +365,3 @@ if __name__ == '__main__':
     tk.Button(frame, text='Click', command=doClick).pack()
     frame.pack()
     root.mainloop()
-
