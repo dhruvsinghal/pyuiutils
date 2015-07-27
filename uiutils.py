@@ -247,6 +247,7 @@ class BaseFrame(tk.Frame):
         '''
         assert nrows >= 1 and ncols >= 1
         tk.Frame.__init__(self, parent)
+        self.parent = parent
         self.root = root
 
         self.status = tk.Label(self, text=initial_status)
@@ -351,7 +352,7 @@ def concatImages(imgs):
 
 
 def ask_for_image_path_to_save(parent):
-    return tkDialog.asksaveasfilename(parent=parent,
+    return tkFileDialog.asksaveasfilename(parent=parent,
                                       filetypes=supportedFiletypes)
 
 
