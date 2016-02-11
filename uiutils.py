@@ -191,6 +191,11 @@ class ClickableImageWidget(ImageWidget):
             self.clicked_points.append((y, x))
             self.draw_all_points()
 
+    def push_click_image_coordinates(self, y, x):
+        '''Draws a point if it is in bounds and adds it to the internal list.
+        The coordinates are expressed in image coordinates.'''
+        self.push_click(*self.image_to_canvas_coordinates(y, x))
+
     def draw_new_image(self, cv_image):
         '''Draw a new image on the canvas, clearing all the drawn points.
         Use this instead of draw_cv_image().'''
@@ -207,6 +212,15 @@ class ClickableImageWidget(ImageWidget):
         clicked_y = float(original_height) * (y - img_y_offset) / drawn_height
         clicked_x = float(original_width) * (x - img_x_offset) / drawn_width
         return (clicked_y, clicked_x)
+
+    def image_to_canvas_coordinates(self, y, x):
+        '''Converts the image coordinates to canvas-coordinates.'''
+        img_y_offset, img_x_offset = self.coordinates_of_top_left()
+        original_height, original_width = self.raw_image.shape[:2]
+        drawn_height, drawn_width = self.drawn_image_dim
+        res_y = y * drawn_width / float(original_width) + img_y_offset
+        res_x = x * drawn_height / float(original_height) + img_x_offset
+        return (res_y, res_x)
 
     def draw_all_points(self):
         '''Draws all the points previously selected.'''
